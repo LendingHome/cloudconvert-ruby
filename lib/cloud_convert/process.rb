@@ -7,6 +7,7 @@ module CloudConvert
     attr_reader :client,
                 :input_format,
                 :output_format,
+                :mode,
                 :process_response,
                 :conversion_response,
                 :status_response,
