@@ -7,6 +7,7 @@ module CloudConvert
     attr_reader :client,
                 :input_format,
                 :output_format,
+                :mode,
                 :process_response,
                 :conversion_response,
                 :status_response,
@@ -18,34 +19,35 @@ module CloudConvert
     def initialize(args = {})
       @input_format = args[:input_format]
       @output_format = args[:output_format]
+      @mode = args[:mode] || "convert"
       @step = :awaiting_creation
       @client = args[:client]
     end
 
     def create
         raise CloudConvert::InvalidStep unless @step == :awaiting_creation
-        url = construct_url("api", "process")
-        response = send_request(http_method: :post, 
-                                url: url, 
+        url = construct_url("process")
+        response = send_request(http_method: :post,
+                                url: url,
                                 params: {
                                     "apikey" => @client.api_key,
                                     "inputformat" => @input_format,
-                                    "outputformat" => @output_format
+                                    "outputformat" => @output_format,
+                                    "mode" => @mode
                                 }) do | response|
             @step = :awaiting_conversion
             response.parsed_response[:success] = true
             create_parsed_response(:process_response, response.parsed_response)
-            @process_response[:subdomain] = extract_subdomain_from_url(@process_response[:url])
         end
         return convert_response response
     end
 
     def convert(opts)
         raise CloudConvert::InvalidStep if @step == :awaiting_creation
-        url = process_url(include_process_id: true)
+        url = process_url()
         multi = opts[:file].respond_to?("read")
-        response = send_request(http_method: :post, 
-                                url: url, 
+        response = send_request(http_method: :post,
+                                url: url,
                                 params: opts,
                                 multi: multi) do |response|
             response.parsed_response[:success] = true
@@ -57,7 +59,7 @@ module CloudConvert
 
     def status
         raise CloudConvert::InvalidStep if @step == :awaiting_creation
-        url = process_url(include_process_id: true)
+        url = process_url()
         response = send_request(http_method: :get,
                                 url: url) do |response|
             create_parsed_response(:status_response, response.parsed_response)
@@ -66,13 +68,13 @@ module CloudConvert
         return convert_response response
     end
 
-    def download(path, file_name="")    
+    def download(path, file_name="")
         raise CloudConvert::InvalidStep if @step == :awaiting_creation
         response =  HTTMultiParty.get(download_url(file_name))
         return update_download_progress response unless response.response.code == "200"
         file_name = response.response.header['content-disposition'][/filename=(\"?)(.+)\1/, 2] if file_name.strip.empty?
         full_path = full_path(path, file_name)
-        return full_path.open("w") do |f| 
+        return full_path.open("w") do |f|
             f.binmode
             f.write response.parsed_response
             full_path.to_s
@@ -90,29 +92,28 @@ module CloudConvert
     def download_url(file = "")
         raise CloudConvert::InvalidStep if @step == :awaiting_creation
         file = "/#{file}" unless file.nil? or file.strip.empty?
-        return "https://#{@process_response[:subdomain]}.cloudconvert.com/download/#{@process_response[:id]}#{file}"
+        return "#{CloudConvert::PROTOCOL}:#{@conversion_response[:output][:url]}#{file}"
     end
 
-    
+
     private
 
     def send_request(opts)
         request =  opts[:params] || {}
         args = [opts[:http_method], opts[:url], {query: request, detect_mime_type: (true if opts[:multi])}]
         response = CloudConvert::Client.send(*args)
-        yield(response) if block_given? and (response.response.code == "200" || 
+        yield(response) if block_given? and (response.response.code == "200" ||
             (response.parsed_response.kind_of?(Hash) and response.parsed_response.key?("step")))
         return response
     end
 
-    def construct_url(subdomain, action, id="")
-        id = "/#{id}" if id.length > 0
-        return "#{CloudConvert::PROTOCOL}://#{subdomain}.#{CloudConvert::DOMAIN}/#{action}#{id}"
+    def construct_url(action, id="")
+      id = "/#{id}" if id.length > 0
+      return "#{CloudConvert::PROTOCOL}://#{CloudConvert::API_DOMAIN}/#{action}#{id}"
     end
 
-    def process_url(opts = {})
-        action = (opts[:include_process_id] ? "process/#{@process_response[:id]}" : "process")
-        return construct_url(@process_response[:subdomain], action)
+    def process_url()
+        return "#{CloudConvert::PROTOCOL}:#{@process_response[:url]}"
     end
 
 
@@ -121,9 +122,6 @@ module CloudConvert
         return self.instance_variable_set("@#{variable_symbol.to_s}", symbolized_response)
     end
 
-    def extract_subdomain_from_url(url)
-        return url.split(".")[0].tr('/','')
-    end
 
     def convert_response(response)
         case @client.return_type
